@@ -1,0 +1,257 @@
+---
+title: "Exercise 2"
+author: "Zhiqian Chen, Yi Zeng, Qihang Liang"
+date: "3/11/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggplot2)
+library(scales)
+library(FNN)
+library(class)
+library(rsample)
+library(caret)
+library(modelr)
+library(parallel)
+library(foreach)
+library(mosaic)
+library(mosaicData)
+library(tidyverse)
+
+
+data(SaratogaHouses)
+german_credit <- read_csv("german_credit.csv")
+capmetro_UT <- read_csv("capmetro_UT.csv")
+hotels_dev <- read_csv("hotels_dev.csv")
+hotels_val <- read_csv("hotels_val.csv")
+```
+
+##Problem 1: visualization
+
+#A) One panel of line graphs that plots average boarding grouped by hour of the day, day of week, and month. Facet by day of week.
+```{r ,include=FALSE}
+capmetro_UT = mutate(capmetro_UT,
+                     day_of_week = factor(day_of_week,
+                                          levels=c("Mon", "Tue", "Wed","Thu", "Fri", "Sat", "Sun")),
+                     month = factor(month,
+                                    levels=c("Sep", "Oct","Nov")))
+
+boarding_total = capmetro_UT %>%
+  group_by(hour_of_day,day_of_week,month) %>%
+  summarize(average_boarding = mean(boarding))
+```
+
+
+
+```{r , echo=FALSE}
+p1 = ggplot(boarding_total) + 
+  geom_line(aes(x = hour_of_day, y = average_boarding, color = month))+
+  facet_wrap(~day_of_week) + labs(title='Average boardings gouped by hour of the day, day of work, and month',
+    x = "Hour of day",
+    y = "Average Boarding",
+    color = "Month")
+
+p1
+```
+The graph whows that the it broadly similar across days for weekday or weekend. But there is a big bifferent between weekday and weekend.
+
+The average boardings on Mondays in September look lower. The reason may be the hot weather in September, and the students don’t want to board compare to other month. The other reason is that there is a holiday on monday in september. 
+The average boardings on Weds/Thurs/Fri in November look lower. This may because the cold weather in November, students don’t want to board compare to other month. The other reason is that the thanksgiving day is in November. Therefore the bordings is lower on Weds/Thurs/Fri in November.
+
+
+
+#B) One panel of scatter plots showing boardings (y) vs. temperature (x) in each 15-minute window, faceted by hour of the day, and with points colored in according to whether it is a weekday or weekend.
+```{r,echo=FALSE, message=FALSE, warning=FALSE}
+p2 = ggplot(capmetro_UT) + 
+  geom_point(aes(x = temperature, y = boarding, color = weekend))+
+  facet_wrap(~hour_of_day) + labs(title='boardings gouped VS. temperature in each 15-minute window',
+    x = "temperature",
+    y = "Boarding",
+    color = "weekend")
+
+p2
+```
+
+When we hold hour of day and weekend status constant, temperature seems to have a no effect on the number of UT students riding the bus. But there is a big effect for bordings depends on weekday or weekend.
+
+## Problem 2
+```{r,echo=FALSE, message=FALSE, warning=FALSE}
+saratoga_split = initial_split(SaratogaHouses, prop = 0.8)
+saratoga_train = training(saratoga_split)
+saratoga_test = testing(saratoga_split)
+
+lm_medium = lm(price ~ lotSize + age + livingArea + bedrooms + 
+                 fireplaces + bathrooms + rooms + heating + fuel + centralAir, 
+               data=saratoga_train)
+lm0= lm(price ~ 1, data=saratoga_train)
+lm_forward = step(lm0, direction='forward',
+                  scope=~(lotSize + age + livingArea + bedrooms + 
+                            fireplaces + bathrooms + rooms + heating + fuel + 
+                            centralAir)^2)
+
+lm_big = lm(price ~ (lotSize + age + livingArea + pctCollege + bedrooms + 
+                       fireplaces + bathrooms + rooms + heating + fuel + centralAir +
+                       landValue + sewer + newConstruction + waterfront)^2, 
+            data= saratoga_train)
+drop1(lm_big)
+lm_step = step(lm_medium, 
+               scope=~(.)^2)
+
+rmse(lm_medium, saratoga_test)
+rmse(lm_big, saratoga_test)
+rmse(lm_forward, saratoga_test)
+rmse(lm_step, saratoga_test)
+getCall(lm_forward)
+coef(lm_forward)
+```
+
+The best linear model I found is feature of livingArea, centralAir, bathrooms, bedrooms, heating, lotSize, rooms, livingArea* centralAir ,bathrooms * heating, bedrooms* heating, livingArea * rooms, bedrooms * rooms, livingArea * lotSize, lotSize * rooms,centralAir*bedrooms. The RMSE is 64636.96, which is lower than the RMSE in professor's medium regression.
+I will use the regression price=livingArea + centralAir + bathrooms + bedrooms +lotSize + rooms + heating to find the best RMSE in KNN model.
+
+```{r,echo=FALSE, message=FALSE, warning=FALSE}
+lm0= lm(price ~ 1, data=saratoga_train)
+lm_forward_knn = step(lm0, direction='forward',
+                  scope=~lotSize + age + livingArea + bedrooms + 
+                            fireplaces + bathrooms + rooms + heating + fuel + 
+                            centralAir)
+getCall(lm_forward_knn)
+coef(lm_forward_knn)
+
+k_grid = c(2, 4, 6, 10, 14, 15, 16, 20, 25, 30, 35, 40, 
+           50, 60, 70, 80, 100, 125, 150, 175, 200) 
+rmse_grid_out = foreach(k = k_grid, .combine='rbind') %do% {
+  knn_model = knnreg(price ~ lotSize + age + livingArea + bedrooms + 
+                       bathrooms + rooms + heating + centralAir + landValue + 
+                       waterfront + newConstruction, data=saratoga_train, k = k, use.all=TRUE)
+  RMSE_= modelr::rmse(knn_model, saratoga_test)
+  c(K=k, RMSE_=RMSE_)} %>% as.data.frame
+rmse_grid_out = foreach(k = k_grid, .combine='c') %do% {
+  knn_model = knnreg(price ~ lotSize + age + livingArea + bedrooms + 
+                       bathrooms + rooms + heating + centralAir + landValue + waterfront + 
+                       newConstruction, data=saratoga_train,k = k, use.all=TRUE)
+  modelr::rmse(knn_model, saratoga_test)
+}
+rmse_grid_out = data.frame(K = k_grid, RMSE = rmse_grid_out)
+ind_best = which.min(rmse_grid_out$RMSE)
+k_best = k_grid[ind_best]
+k_best
+
+knn = knnreg(price ~ lotSize + age + livingArea + bedrooms + 
+               bathrooms + rooms + heating + centralAir + landValue + waterfront + 
+               newConstruction, data=saratoga_train, k=k_best)
+rmse(knn, saratoga_test)
+```
+
+
+
+## Problem 3
+
+```{r,echo=FALSE, message=FALSE, warning=FALSE}
+german_credit_mean=german_credit %>%
+  group_by(history) %>%
+  summarize(mean_default=mean(Default))
+
+ggplot(data=german_credit_mean,aes(x=history,y=mean_default))+
+  geom_bar(stat="identity",alpha=0.9)+
+  labs(title="Probability of Default in Credit History",x="Credit History",y="Default Probability")
+
+credit_model <- glm(Default ~ duration + amount + installment + age + history + purpose + foreign,family=binomial, data=german_credit)
+summary(credit_model)
+```
+
+1)Banks provide a large number of loans to people with good credit records, but rarely provide loans to people with poor credit records. Since defaults rarely occur, the bank conducted a sample survey of a group of default loans. Banks try to match each default behavior with similar loan groups that have not yet defaulted, resulting in a large number of default over-sampling. According to the chart produced, the lower the historical credit of the borrower, the lower the probability of default.
+2)I think this data set is not suitable for constructing the default prediction model because there are a large number of default values oversampling. In my opinion, I suggest that banks should reduce the default sample and increase the use of proportional sampling, which may be more suitable for default prediction models.
+
+
+## Problem 4: Children and hotel reservations
+
+#Model Building
+
+#1.baseline model 1: A small model that uses only the market segment, adults, customer type and repeated guest variables as features
+```{r,echo=FALSE, message=FALSE, warning=FALSE}
+hotels_split = initial_split(hotels_dev, prop = 0.8)
+hotels_train = training(hotels_split)
+hotels_test = testing(hotels_split)
+
+lm_baseline1 = lm(children ~ market_segment + adults + customer_type +
+                       is_repeated_guest,data=hotels_dev)
+
+summary(lm_baseline1)
+rmse(lm_baseline1, hotels_test)
+```
+
+For baseline model 1, the Root mean squared error is 0.27.
+
+#2.baseline 2: a big model that uses all the possible predictors expect the arrival data variable
+```{r,echo=FALSE, message=FALSE, warning=FALSE}
+lm_baseline2= lm(children ~ .- arrival_date, data=hotels_dev)
+
+summary(lm_baseline2)
+rmse(lm_baseline2, hotels_test)
+```
+For baseline model 2, the Root mean squared error is 0.23.
+
+
+#3.best linear model, as the question stated, hotel booking with children on it may affect hotel's restaurant (variable meal as feature), and including many engineered features, like previous booking canceled and customer type. Also, there may be some nonlinear relationship with age and the stays in weekend nights, so I add the the squared term in the model.
+```{r,echo=FALSE, message=FALSE, warning=FALSE}
+lm_bestmodel <- lm(children ~ hotel + lead_time + meal + stays_in_weekend_nights 
+               + stays_in_week_nights + adults + market_segment + is_repeated_guest 
+               + log(1+previous_bookings_not_canceled) + reserved_room_type 
+               + deposit_type + assigned_room_type + customer_type + average_daily_rate
+               + days_in_waiting_list + total_of_special_requests, data=hotels_dev)
+
+summary(lm_bestmodel)
+rmse(lm_bestmodel, hotels_test)
+```
+For the best model I build, the Root mean squared error is 0.23 which is very close to baseline model 2. For the out-of-sample performance,the linear model I built has the minimum RMSE, and baseline model 1 has the larger RMSE. Also, the model I built has largest adjusted R-squared, so I will select bestmodel as the best model.
+
+
+#Model Validation: Step 1
+In model validation step 1, we plot the ROC curves for our best model with data in hotels_val, with threshold vary from [0, 1]
+```{r,echo=FALSE, message=FALSE, warning=FALSE}
+phat_lm_bestmodel = predict(lm_bestmodel,hotels_val)
+y_true = hotels_val$children
+n = 1000
+tpr1 <- fpr1 <- rep(1,n + 1)
+f1 <- rep(0,n + 1)
+for (i in 1:n) {
+  threshold <- i/n
+  yhat_lm_bestmodel = ifelse(phat_lm_bestmodel >= threshold, 1, 0)
+  tp <- sum(yhat_lm_bestmodel == 1 & y_true == 1)
+  fp <- sum(yhat_lm_bestmodel== 1 & y_true == 0)
+  tn <- sum(yhat_lm_bestmodel == 0 & y_true == 0)
+  fn <- sum(yhat_lm_bestmodel == 0 & y_true == 1)
+  tpr1[i] <- tp/(tp+fn)
+  fpr1[i] <- fp/(tn+fp)
+}
+ggplot() + geom_line(aes(x=fpr1, y=tpr1)) +
+  labs(
+    x = "FPR(t)",
+    y = "TPR(t)",
+    title='ROC Curve:For the best model'
+  )
+```
+
+
+#Model Validation: Step 2
+
+```{r,echo=FALSE, message=FALSE, warning=FALSE}
+hotels_val = hotels_val %>%
+  mutate(fold_id = rep(1:20, length=nrow(hotels_val)) %>% sample)
+phat_val = predict(lm_bestmodel,hotels_val,type='response')
+summary(phat_val)
+hotels_val = hotels_val %>%
+  mutate(yhat_val = ifelse(phat_val > 0.4, 1, 0))
+table = hotels_val %>%
+  group_by(fold_id) %>%
+  summarise(True_Probability = sum(children == 1), Predicted_Probability = sum(yhat_val == 1), Residual =True_Probability - Predicted_Probability)
+table
+
+```
+
+In model validation step 2, we create 20 folds of hotels_Val and each fold have about 250 bookings in it,for each fold predict whether each booking will have children on it, sum up the predicted probability for all the bookings in the fold and compare this "expected" number of bookings with children versus the actual number of bookings with children in that fold.The error of my model do at predicting is shown above, there is a 0, and there are some large residual. However, I think the model do a great job.
+
+
